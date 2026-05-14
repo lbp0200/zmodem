@@ -141,7 +141,7 @@ class ZModemParser implements Iterator<ZModemPacket> {
     }
 
     // _buffer.expect(consts.LF);
-    _buffer.expect(0x8a);
+    _buffer.expect(consts.LF);
 
     yield ZModemHeader(frameType, p0, p1, p2, p3);
   }

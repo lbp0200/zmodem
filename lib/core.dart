@@ -157,6 +157,11 @@ abstract class _ZModemState {
   final ZModemCore core;
 
   ZModemEvent? handleHeader(ZModemHeader header) {
+    if (header.type == consts.ZFIN) {
+      core._enqueue(ZModemHeader.fin());
+      core._state = _ZFinState(core);
+      return ZSessionFinishedEvent();
+    }
     throw ZModemException('Unexpected header: $header (state: $this)');
   }
 
