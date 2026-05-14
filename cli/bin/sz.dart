@@ -23,8 +23,8 @@ void main(List<String> files) async {
 
 Future<void> sz(List<String> files) async {
   final zcore = ZModemCore(
-      // onTrace: File('trace.log').openWrite().writeln,
-      );
+    // onTrace: File('trace.log').openWrite().writeln,
+  );
   zcore.initiateSend();
 
   if (zcore.hasDataToSend) {

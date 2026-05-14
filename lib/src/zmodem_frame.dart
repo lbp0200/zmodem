@@ -8,7 +8,7 @@ import 'package:zmodem_lbp/src/util/string.dart';
 import 'package:zmodem_lbp/zmodem.dart';
 
 abstract class ZModemPacket {
-  // int get type;
+  int get type;
 
   // bool get isCorrupted;
 
@@ -187,11 +187,11 @@ class ZModemDataPacket implements ZModemPacket {
   }) {
     final type = reply
         ? eof
-            ? consts.ZCRCW
-            : consts.ZCRCQ
+              ? consts.ZCRCW
+              : consts.ZCRCQ
         : eof
-            ? consts.ZCRCE
-            : consts.ZCRCG;
+        ? consts.ZCRCE
+        : consts.ZCRCG;
     return ZModemDataPacket(type, data);
   }
 
@@ -285,6 +285,9 @@ String _frameTypeToString(int type) {
 class ZModemAbortSequence implements ZModemPacket {
   const ZModemAbortSequence();
 
+  @override
+  int get type => consts.ZABORT;
+
   static final abortSequence = Uint8List.fromList([
     consts.CAN,
     consts.CAN,
@@ -301,6 +304,9 @@ class ZModemAbortSequence implements ZModemPacket {
 
 class ZModemOverAndOut implements ZModemPacket {
   const ZModemOverAndOut();
+
+  @override
+  int get type => consts.ZFIN;
 
   static final overAndOut = Uint8List.fromList('OO'.codeUnits);
 

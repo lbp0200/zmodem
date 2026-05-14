@@ -11,9 +11,9 @@ class ZFileOfferedEvent implements ZModemEvent {
 
   @override
   String toString() {
-    return DebugStringBuilder('ZFileOfferedEvent')
-        .withField('fileInfo', fileInfo)
-        .toString();
+    return DebugStringBuilder(
+      'ZFileOfferedEvent',
+    ).withField('fileInfo', fileInfo).toString();
   }
 }
 
@@ -25,9 +25,9 @@ class ZFileDataEvent implements ZModemEvent {
 
   @override
   String toString() {
-    return DebugStringBuilder('ZFileDataEvent')
-        .withField('data', data.length)
-        .toString();
+    return DebugStringBuilder(
+      'ZFileDataEvent',
+    ).withField('data', data.length).toString();
   }
 }
 

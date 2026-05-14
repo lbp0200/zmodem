@@ -28,13 +28,10 @@ void main() {
       expect(client.receive(server.dataToSend()), [isA<ZFileDataEvent>()]);
 
       server.finishSending(3);
-      expect(
-        client.receive(server.dataToSend()),
-        [
-          isA<ZFileDataEvent>(), // ZCRCE
-          isA<ZFileEndEvent>(), // ZEOF
-        ],
-      );
+      expect(client.receive(server.dataToSend()), [
+        isA<ZFileDataEvent>(), // ZCRCE
+        isA<ZFileEndEvent>(), // ZEOF
+      ]);
 
       expect(server.receive(client.dataToSend()), [isA<ZReadyToSendEvent>()]);
 
