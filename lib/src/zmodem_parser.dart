@@ -13,6 +13,8 @@ class ZModemParser implements Iterator<ZModemPacket> {
 
   void Function(int)? onPlainText;
 
+  void Function()? onCancel;
+
   ZModemPacket? _current;
 
   /// The last parsed packet.
@@ -73,6 +75,14 @@ class ZModemParser implements Iterator<ZModemPacket> {
         continue;
       }
 
+      // Drain non-frame bytes (CAN cancel, plain text, etc.) immediately
+      // without waiting for 4+ bytes in the buffer. This is critical for
+      // detecting the 5×CAN cancel sequence which arrives as individual bytes.
+      if (_buffer.isNotEmpty && _buffer.peek() != consts.ZPAD) {
+        _handleDirtyChar(_buffer.readByte());
+        continue;
+      }
+
       while (_buffer.length < 4) {
         yield null;
       }
@@ -102,11 +112,29 @@ class ZModemParser implements Iterator<ZModemPacket> {
     }
   }
 
+  var _consecutiveCanCount = 0;
+
   void _handleDirtyChar(int byte) {
     if (byte == consts.XON) {
       return;
     }
+    if (byte == consts.CAN) {
+      _consecutiveCanCount++;
+      if (_consecutiveCanCount >= 5) {
+        _consecutiveCanCount = 0;
+        _handleCancel();
+      }
+      return;
+    }
+    _consecutiveCanCount = 0;
     onPlainText?.call(byte);
+  }
+
+  void _handleCancel() {
+    _buffer.clear();
+    _expectDataSubpacket = false;
+    _consecutiveCanCount = 0;
+    onCancel?.call();
   }
 
   Iterable<ZModemPacket?> _parseHexHeader() sync* {

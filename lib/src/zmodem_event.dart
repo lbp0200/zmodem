@@ -39,6 +39,14 @@ class ZFileEndEvent implements ZModemEvent {
   }
 }
 
+/// The remote side has sent a cancel sequence (5 × CAN). The session is reset.
+class ZSessionCancelledEvent implements ZModemEvent {
+  @override
+  String toString() {
+    return 'ZSessionCancelledEvent()';
+  }
+}
+
 /// The event fired when the ZModem session is fully closed.
 class ZSessionFinishedEvent implements ZModemEvent {
   @override

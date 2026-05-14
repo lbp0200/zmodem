@@ -23,6 +23,13 @@ class ChunkBuffer {
 
   bool get isNotEmpty => _length > 0;
 
+  void clear() {
+    _backlog.clear();
+    _currentChunk = null;
+    _length = 0;
+    _readOffset = 0;
+  }
+
   void add(Uint8List chunk) {
     if (chunk.isEmpty) {
       return;

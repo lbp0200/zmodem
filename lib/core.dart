@@ -17,7 +17,14 @@ typedef ZModemTextHandler = void Function(int char);
 class ZModemCore {
   ZModemCore({this.onTrace, this.onPlainText});
 
-  late final _parser = ZModemParser()..onPlainText = onPlainText;
+  late final _parser = ZModemParser()
+    ..onPlainText = onPlainText
+    ..onCancel = () {
+      _state = _ZInitState(this);
+      _cancelled = true;
+    };
+
+  var _cancelled = false;
 
   final _sendQueue = Queue<ZModemPacket>();
 
@@ -36,7 +43,6 @@ class ZModemCore {
 
   Iterable<ZModemEvent> receive(Uint8List data) sync* {
     _parser.addData(data);
-    // print('data: ${data.map((e) => e.toRadixString(16)).toList()}');
 
     while (_parser.moveNext()) {
       final packet = _parser.current;
@@ -53,6 +59,11 @@ class ZModemCore {
           yield event;
         }
       }
+    }
+
+    if (_cancelled) {
+      _cancelled = false;
+      yield ZSessionCancelledEvent();
     }
   }
 
@@ -240,6 +251,17 @@ class _ZReceivedFileProposalState extends _ZModemState {
   _ZReceivedFileProposalState(super.core);
 
   @override
+  ZModemEvent? handleHeader(ZModemHeader header) {
+    switch (header.type) {
+      case consts.ZEOF:
+      case consts.ZFIN:
+        return super.handleHeader(header);
+      default:
+        return super.handleHeader(header);
+    }
+  }
+
+  @override
   ZModemEvent? handleDataSubpacket(ZModemDataPacket packet) {
     final pathname = readCString(packet.data, 0);
     final propertyString = readCString(packet.data, pathname.length + 1);
@@ -364,6 +386,20 @@ class ZSentFileProposalState extends _ZModemState {
 /// contents.
 class _ZSendingContentState extends _ZModemState {
   _ZSendingContentState(super.core);
+
+  @override
+  ZModemEvent? handleHeader(ZModemHeader header) {
+    switch (header.type) {
+      case consts.ZRPOS:
+        core._state = _ZReadyToSendState(core);
+        return ZFileAcceptedEvent(header.p0);
+      case consts.ZSKIP:
+        core._state = _ZReadyToSendState(core);
+        return ZFileSkippedEvent();
+      default:
+        return super.handleHeader(header);
+    }
+  }
 }
 
 /// A state where we as the sender have sent the ZFIN header, and are waiting
@@ -386,4 +422,16 @@ class _ZClosedState extends _ZModemState {
 /// A state where the session is fully closed.
 class _ZFinState extends _ZModemState {
   _ZFinState(super.core);
+
+  @override
+  ZModemEvent? handleHeader(ZModemHeader header) {
+    // Ignore all incoming headers in finished state, including duplicate
+    // ZFIN. The session is already closed.
+    return null;
+  }
+
+  @override
+  ZModemEvent? handleDataSubpacket(ZModemDataPacket packet) {
+    return null;
+  }
 }

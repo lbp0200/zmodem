@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:test/test.dart';
 import 'package:zmodem_lbp/zmodem.dart';
+import 'package:zmodem_lbp/src/consts.dart' as consts;
 
 void main() {
   group('ZModemCore', () {
@@ -40,6 +41,21 @@ void main() {
       //   client.receive(server.dataToSend()),
       //   [isA<ZSessionFinishedEvent>()],
       // );
+    });
+
+    test('cancel sequence resets session', () {
+      final core = ZModemCore();
+      final cancel = Uint8List.fromList([
+        consts.CAN,
+        consts.CAN,
+        consts.CAN,
+        consts.CAN,
+        consts.CAN,
+      ]);
+      final events = core.receive(cancel).toList();
+      expect(events, [isA<ZSessionCancelledEvent>()]);
+      expect(core.isFinished, isFalse);
+      expect(core.hasDataToSend, isFalse);
     });
   });
 }
