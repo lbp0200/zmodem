@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 const _crcTable = [
   0x0000, 0x1021, 0x2042, 0x3063, 0x4084, 0x50a5, 0x60c6, 0x70e7, //
   0x8108, 0x9129, 0xa14a, 0xb16b, 0xc18c, 0xd1ad, 0xe1ce, 0xf1ef, //
@@ -100,6 +102,17 @@ class CRC16 {
     update(0);
     _crc &= 0xFFFF;
   }
+}
+
+int computeCrc16(List<int> bytes) {
+  final crc = CRC16();
+  crc.updateAll(bytes);
+  crc.finalize();
+  return crc.value;
+}
+
+bool validateCrc16(Uint8List data, int receivedCrc) {
+  return computeCrc16(data) == receivedCrc;
 }
 
 class CRC32 {

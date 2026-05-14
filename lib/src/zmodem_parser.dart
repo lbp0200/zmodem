@@ -1,123 +1,260 @@
-// ignore_for_file: curly_braces_in_flow_control_structures
-
 import 'dart:typed_data';
 
 import 'package:zmodem_lbp/src/buffer.dart';
 import 'package:zmodem_lbp/src/consts.dart' as consts;
-import 'package:zmodem_lbp/src/zmodem_frame.dart';
+import 'package:zmodem_lbp/src/crc.dart';
+import 'package:zmodem_lbp/src/zmodem_frame_types.dart';
 
-class ZModemParser implements Iterator<ZModemPacket> {
+enum _ParseState { expectHeader, expectData }
+
+class ZModemParser implements Iterator<ZFrame> {
   final _buffer = ChunkBuffer();
-
-  late final Iterator<ZModemPacket?> _parser = _createParser().iterator;
+  late final Iterator<ZFrame?> _parser = _createParser().iterator;
+  ZFrame? _current;
+  static const _maxDataSubpacketSize = 64 * 1024;
 
   void Function(int)? onPlainText;
-
   void Function()? onCancel;
 
-  ZModemPacket? _current;
+  /// Used to communicate back from the sub-gestors ([_parseHexHeader],
+  /// [_parseBinaryPacket]) to the main state machine so it can decide the
+  /// next state based on the type of header that was just yielded.
+  int? _lastHeaderType;
 
-  /// The last parsed packet.
   @override
-  ZModemPacket get current {
+  ZFrame get current {
     if (_current == null) {
-      throw StateError('No event has been parsed yet');
+      throw StateError('No frame has been parsed yet');
     }
     return _current!;
   }
 
-  /// Adds more data to the buffer for the parser to consume. Call [moveNext]
-  /// after this to parse the next packet.
   void addData(Uint8List data) {
     _buffer.add(data);
   }
 
-  /// Let the parser parse the next packet. Returns true if a packet is parsed.
-  /// After returning true, the [current] property will be set to the parsed
-  /// packet.
   @override
   bool moveNext() {
     _parser.moveNext();
-
-    final packet = _parser.current;
-
-    if (packet == null) {
-      return false;
-    }
-
-    _current = packet;
+    final frame = _parser.current;
+    if (frame == null) return false;
+    _current = frame;
     return true;
   }
 
-  var _expectDataSubpacket = false;
+  Iterable<ZFrame?> _createParser() sync* {
+    var state = _ParseState.expectHeader;
+    final dataBuffer = BytesBuilder();
 
-  /// Tells the parser to expect the next packet to be a data subpacket.
-  ///
-  /// This is necessary because lrzsz produces plain text beween ZMODEM frames
-  /// and it's impossible to distinguish between plain text and a data subpacket
-  /// without this prompt....
-  void expectDataSubpacket() {
-    _expectDataSubpacket = true;
+    while (true) {
+      switch (state) {
+        case _ParseState.expectHeader:
+          if (_buffer.isNotEmpty && _buffer.peek() != consts.ZPAD) {
+            _handleDirtyChar(_buffer.readByte());
+            continue;
+          }
+          while (_buffer.length < 4) {
+            yield null;
+            continue;
+          }
+          if (_buffer.peek() == consts.ZPAD) {
+            if (_buffer.peek(1) == consts.ZPAD &&
+                _buffer.peek(2) == consts.ZDLE &&
+                _buffer.peek(3) == consts.ZHEX) {
+              _buffer.expect(consts.ZPAD);
+              _buffer.expect(consts.ZPAD);
+              _buffer.expect(consts.ZDLE);
+              _buffer.expect(consts.ZHEX);
+              yield* _parseHexHeader();
+              state = _nextHeaderState();
+              continue;
+            }
+            if (_buffer.peek(1) == consts.ZDLE &&
+                _buffer.peek(2) == consts.ZBIN) {
+              _buffer.expect(consts.ZPAD);
+              _buffer.expect(consts.ZDLE);
+              _buffer.expect(consts.ZBIN);
+              yield* _parseBinaryPacket();
+              state = _nextHeaderState();
+              continue;
+            }
+          }
+          _handleDirtyChar(_buffer.readByte());
+          break;
+
+        case _ParseState.expectData:
+          while (true) {
+            final char = _buffer.readEscaped();
+            if (char == null) {
+              yield null;
+              break;
+            }
+
+            if (dataBuffer.length > _maxDataSubpacketSize) {
+              throw StateError(
+                'Data subpacket exceeded max size of $_maxDataSubpacketSize',
+              );
+            }
+
+            if (char == (consts.ZCRCE | consts.ZDLEESC) ||
+                char == (consts.ZCRCG | consts.ZDLEESC) ||
+                char == (consts.ZCRCQ | consts.ZDLEESC) ||
+                char == (consts.ZCRCW | consts.ZDLEESC)) {
+              final terminator = char ^ consts.ZDLEESC;
+              while (!_buffer.hasEscaped) {
+                yield null;
+              }
+              final crcHi = _buffer.readEscaped();
+              if (crcHi == null) {
+                yield null;
+                break;
+              }
+              while (!_buffer.hasEscaped) {
+                yield null;
+              }
+              final crcLo = _buffer.readEscaped();
+              if (crcLo == null) {
+                yield null;
+                break;
+              }
+
+              final receivedCrc = (crcHi << 8) | crcLo;
+              final rawData = dataBuffer.takeBytes();
+              final crcInput = Uint8List.fromList([...rawData, terminator]);
+              final computedCrc = computeCrc16(crcInput);
+
+              yield ZFrame(
+                type: terminator,
+                params: [],
+                data: Uint8List.fromList(rawData),
+                computedCrc: computedCrc,
+                receivedCrc: receivedCrc,
+                crcValid: computedCrc == receivedCrc,
+                format: ZFrameFormat.dataSubpacket,
+              );
+
+              if (terminator == consts.ZCRCE || terminator == consts.ZCRCW) {
+                state = _ParseState.expectHeader;
+              }
+              break;
+            }
+
+            dataBuffer.addByte(char);
+          }
+          break;
+      }
+    }
   }
 
-  /// Creates an instance of zmodem parser.
-  ///
-  /// This uses the sync* generator syntax to be able to yield when no enough
-  /// data is available and resume the context later when more data is added.
-  ///
-  /// The returned iterator yields null when no enough data is available and
-  /// yields a [ZModemPacket] when a packet is parsed.
-  Iterable<ZModemPacket?> _createParser() sync* {
-    while (true) {
-      if (_expectDataSubpacket) {
-        _expectDataSubpacket = false;
-        yield* _parseDataSubpacket();
-        continue;
-      }
+  _ParseState _nextHeaderState() {
+    if (_lastHeaderType == null) return _ParseState.expectHeader;
+    final introduces =
+        _lastHeaderType! == consts.ZFILE ||
+        _lastHeaderType! == consts.ZSINIT ||
+        _lastHeaderType! == consts.ZDATA;
+    return introduces ? _ParseState.expectData : _ParseState.expectHeader;
+  }
 
-      // Drain non-frame bytes (CAN cancel, plain text, etc.) immediately
-      // without waiting for 4+ bytes in the buffer. This is critical for
-      // detecting the 5×CAN cancel sequence which arrives as individual bytes.
-      if (_buffer.isNotEmpty && _buffer.peek() != consts.ZPAD) {
-        _handleDirtyChar(_buffer.readByte());
-        continue;
-      }
+  Iterable<ZFrame?> _parseHexHeader() sync* {
+    const asciiFields = 1 + 4 + 2;
+    const headerLength = asciiFields * 2;
 
-      while (_buffer.length < 4) {
+    while (_buffer.length < headerLength) {
+      yield null;
+    }
+
+    final frameType = _buffer.readAsciiByte();
+    final p0 = _buffer.readAsciiByte();
+    final p1 = _buffer.readAsciiByte();
+    final p2 = _buffer.readAsciiByte();
+    final p3 = _buffer.readAsciiByte();
+    final crcHigh = _buffer.readAsciiByte();
+    final crcLow = _buffer.readAsciiByte();
+
+    final receivedCrc = (crcHigh << 8) | crcLow;
+    final computedCrc = computeCrc16([frameType, p0, p1, p2, p3]);
+
+    while (_buffer.isEmpty) {
+      yield null;
+    }
+    if (_buffer.peek() == consts.CR) {
+      _buffer.readByte();
+      while (_buffer.isEmpty) {
         yield null;
       }
-
-      if (_buffer.peek() == consts.ZPAD) {
-        if (_buffer.peek(1) == consts.ZPAD &&
-            _buffer.peek(2) == consts.ZDLE &&
-            _buffer.peek(3) == consts.ZHEX) {
-          _buffer.expect(consts.ZPAD);
-          _buffer.expect(consts.ZPAD);
-          _buffer.expect(consts.ZDLE);
-          _buffer.expect(consts.ZHEX);
-          yield* _parseHexHeader();
-          continue;
-        }
-
-        if (_buffer.peek(1) == consts.ZDLE && _buffer.peek(2) == consts.ZBIN) {
-          _buffer.expect(consts.ZPAD);
-          _buffer.expect(consts.ZDLE);
-          _buffer.expect(consts.ZBIN);
-          yield* _parseBinaryPacket();
-          continue;
-        }
-      }
-
-      _handleDirtyChar(_buffer.readByte());
     }
+    _buffer.expect(consts.LF);
+
+    _lastHeaderType = frameType;
+    yield ZFrame(
+      type: frameType,
+      params: [p0, p1, p2, p3],
+      data: Uint8List(0),
+      computedCrc: computedCrc,
+      receivedCrc: receivedCrc,
+      crcValid: computedCrc == receivedCrc,
+      format: ZFrameFormat.hexHeader,
+    );
+  }
+
+  Iterable<ZFrame?> _parseBinaryPacket() sync* {
+    while (_buffer.length < 7) {
+      yield null;
+    }
+    while (!_buffer.hasEscaped) {
+      yield null;
+    }
+    final frameType = _buffer.readEscaped()!;
+
+    while (!_buffer.hasEscaped) {
+      yield null;
+    }
+    final p0 = _buffer.readEscaped()!;
+
+    while (!_buffer.hasEscaped) {
+      yield null;
+    }
+    final p1 = _buffer.readEscaped()!;
+
+    while (!_buffer.hasEscaped) {
+      yield null;
+    }
+    final p2 = _buffer.readEscaped()!;
+
+    while (!_buffer.hasEscaped) {
+      yield null;
+    }
+    final p3 = _buffer.readEscaped()!;
+
+    while (!_buffer.hasEscaped) {
+      yield null;
+    }
+    final crcHigh = _buffer.readEscaped()!;
+
+    while (!_buffer.hasEscaped) {
+      yield null;
+    }
+    final crcLow = _buffer.readEscaped()!;
+
+    final receivedCrc = (crcHigh << 8) | crcLow;
+    final computedCrc = computeCrc16([frameType, p0, p1, p2, p3]);
+
+    _lastHeaderType = frameType;
+    yield ZFrame(
+      type: frameType,
+      params: [p0, p1, p2, p3],
+      data: Uint8List(0),
+      computedCrc: computedCrc,
+      receivedCrc: receivedCrc,
+      crcValid: computedCrc == receivedCrc,
+      format: ZFrameFormat.binaryHeader,
+    );
   }
 
   var _consecutiveCanCount = 0;
 
   void _handleDirtyChar(int byte) {
-    if (byte == consts.XON) {
-      return;
-    }
+    if (byte == consts.XON) return;
     if (byte == consts.CAN) {
       _consecutiveCanCount++;
       if (_consecutiveCanCount >= 5) {
@@ -132,107 +269,8 @@ class ZModemParser implements Iterator<ZModemPacket> {
 
   void _handleCancel() {
     _buffer.clear();
-    _expectDataSubpacket = false;
     _consecutiveCanCount = 0;
     onCancel?.call();
-  }
-
-  Iterable<ZModemPacket?> _parseHexHeader() sync* {
-    const asciiFields = 1 + 4 + 2;
-    const headerLength = asciiFields * 2;
-
-    // Hex header has fixed length, so we can check the length before reading.
-    while (_buffer.length < headerLength) {
-      yield null;
-    }
-
-    final frameType = _buffer.readAsciiByte();
-    final p0 = _buffer.readAsciiByte();
-    final p1 = _buffer.readAsciiByte();
-    final p2 = _buffer.readAsciiByte();
-    final p3 = _buffer.readAsciiByte();
-    final _ = _buffer.readAsciiByte();
-    final _ = _buffer.readAsciiByte();
-
-    while (_buffer.isEmpty) {
-      yield null;
-    }
-
-    // Consume the optional CR before the LF.
-    if (_buffer.peek() == consts.CR) {
-      _buffer.readByte();
-
-      while (_buffer.isEmpty) {
-        yield null;
-      }
-    }
-
-    // _buffer.expect(consts.LF);
-    _buffer.expect(consts.LF);
-
-    yield ZModemHeader(frameType, p0, p1, p2, p3);
-  }
-
-  Iterable<ZModemPacket?> _parseBinaryPacket() sync* {
-    // Binary header has variable length, though it always has at least 7 bytes.
-    while (_buffer.length < 7) {
-      yield null;
-    }
-
-    while (!_buffer.hasEscaped) yield null;
-    final frameType = _buffer.readEscaped()!;
-
-    while (!_buffer.hasEscaped) yield null;
-    final p0 = _buffer.readEscaped()!;
-
-    while (!_buffer.hasEscaped) yield null;
-    final p1 = _buffer.readEscaped()!;
-
-    while (!_buffer.hasEscaped) yield null;
-    final p2 = _buffer.readEscaped()!;
-
-    while (!_buffer.hasEscaped) yield null;
-    final p3 = _buffer.readEscaped()!;
-
-    while (!_buffer.hasEscaped) yield null;
-    final _ = _buffer.readEscaped()!;
-
-    while (!_buffer.hasEscaped) yield null;
-    final _ = _buffer.readEscaped()!;
-
-    yield ZModemHeader(frameType, p0, p1, p2, p3);
-  }
-
-  Iterable<ZModemPacket?> _parseDataSubpacket() sync* {
-    final buffer = BytesBuilder();
-
-    while (true) {
-      final char = _buffer.readEscaped();
-
-      if (char == null) {
-        yield null;
-        continue;
-      }
-
-      switch (char) {
-        case consts.ZCRCE | consts.ZDLEESC:
-        case consts.ZCRCG | consts.ZDLEESC:
-        case consts.ZCRCQ | consts.ZDLEESC:
-        case consts.ZCRCW | consts.ZDLEESC:
-          while (!_buffer.hasEscaped) yield null;
-          final _ = _buffer.readEscaped();
-
-          while (!_buffer.hasEscaped) yield null;
-          final _ = _buffer.readEscaped();
-
-          final type = char ^ consts.ZDLEESC;
-          yield ZModemDataPacket(type, buffer.takeBytes());
-          return;
-        default:
-          buffer.addByte(char);
-          continue;
-      }
-    }
   }
 }
 
@@ -255,10 +293,6 @@ extension _ChunkBufferExtensions on ChunkBuffer {
     return high * 16 + low;
   }
 
-  /// Reads a byte from the buffer, escaping it if necessary. This operation
-  /// may consume more than one byte from the buffer if the byte is escaped.
-  /// Returns `null` if the buffer is empty or if the buffer contains only
-  /// the escape character.
   int? readEscaped() {
     if (isEmpty) {
       return null;

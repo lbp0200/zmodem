@@ -2,7 +2,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:zmodem_lbp/src/zmodem_frame.dart';
+import 'package:zmodem_lbp/src/zmodem_frame_types.dart';
 import 'package:zmodem_lbp/src/zmodem_parser.dart';
 import 'package:zmodem_lbp/src/consts.dart' as consts;
 
@@ -10,23 +10,20 @@ void main() async {
   final session1Data = await File('test/fixture/session1.bin').readAsBytes();
 
   group('ZModemParser', () {
-    test('works', () async {
+    test('works with automatic state machine', () async {
       final parser = ZModemParser();
       parser.addData(session1Data);
 
-      checkHeader(parser, consts.ZSINIT, 0, 0, 0, 64);
-      parser.expectDataSubpacket();
-      checkData(parser, consts.ZCRCW, 2);
-      checkHeader(parser, consts.ZFILE, 0, 0, 0, 0);
-      parser.expectDataSubpacket();
-      checkData(parser, consts.ZCRCW, 26);
-      checkHeader(parser, consts.ZDATA, 0, 0, 0, 0);
-      parser.expectDataSubpacket();
-      checkData(parser, consts.ZCRCG, 107);
-      parser.expectDataSubpacket();
-      checkData(parser, consts.ZCRCE, 0);
-      checkHeader(parser, consts.ZEOF, 107, 0, 0, 0);
-      checkHeader(parser, consts.ZFIN, 0, 0, 0, 0);
+      checkFrame(parser, consts.ZSINIT, ZFrameFormat.hexHeader, true);
+      // Fixture has invalid CRC on the attn subpacket after ZSINIT
+      checkFrame(parser, consts.ZCRCW, ZFrameFormat.dataSubpacket, false, 2);
+      checkFrame(parser, consts.ZFILE, ZFrameFormat.binaryHeader, true);
+      checkFrame(parser, consts.ZCRCW, ZFrameFormat.dataSubpacket, true, 26);
+      checkFrame(parser, consts.ZDATA, ZFrameFormat.binaryHeader, true);
+      checkFrame(parser, consts.ZCRCG, ZFrameFormat.dataSubpacket, true, 107);
+      checkFrame(parser, consts.ZCRCE, ZFrameFormat.dataSubpacket, true, 0);
+      checkFrame(parser, consts.ZEOF, ZFrameFormat.hexHeader, true);
+      checkFrame(parser, consts.ZFIN, ZFrameFormat.hexHeader, true);
     });
 
     test('works byte by byte', () {
@@ -36,43 +33,61 @@ void main() async {
         parser.addData(Uint8List.fromList([byte]));
       }
 
-      checkHeader(parser, consts.ZSINIT, 0, 0, 0, 64);
-      parser.expectDataSubpacket();
-      checkData(parser, consts.ZCRCW, 2);
-      checkHeader(parser, consts.ZFILE, 0, 0, 0, 0);
-      parser.expectDataSubpacket();
-      checkData(parser, consts.ZCRCW, 26);
-      checkHeader(parser, consts.ZDATA, 0, 0, 0, 0);
-      parser.expectDataSubpacket();
-      checkData(parser, consts.ZCRCG, 107);
-      parser.expectDataSubpacket();
-      checkData(parser, consts.ZCRCE, 0);
-      checkHeader(parser, consts.ZEOF, 107, 0, 0, 0);
-      checkHeader(parser, consts.ZFIN, 0, 0, 0, 0);
+      checkFrame(parser, consts.ZSINIT, ZFrameFormat.hexHeader, true);
+      checkFrame(parser, consts.ZCRCW, ZFrameFormat.dataSubpacket, false, 2);
+      checkFrame(parser, consts.ZFILE, ZFrameFormat.binaryHeader, true);
+      checkFrame(parser, consts.ZCRCW, ZFrameFormat.dataSubpacket, true, 26);
+      checkFrame(parser, consts.ZDATA, ZFrameFormat.binaryHeader, true);
+      checkFrame(parser, consts.ZCRCG, ZFrameFormat.dataSubpacket, true, 107);
+      checkFrame(parser, consts.ZCRCE, ZFrameFormat.dataSubpacket, true, 0);
+      checkFrame(parser, consts.ZEOF, ZFrameFormat.hexHeader, true);
+      checkFrame(parser, consts.ZFIN, ZFrameFormat.hexHeader, true);
+    });
+
+    test('corrupt CRC hex header yields crcValid == false', () {
+      final parser = ZModemParser();
+      final bytes = Uint8List.fromList([
+        // Build a hex header: ZPAD ZPAD ZDLE ZHEX type p0 p1 p2 p3 crcHi crcLo CR LF XON
+        consts.ZPAD, consts.ZPAD, consts.ZDLE, consts.ZHEX,
+        // type=ZRINIT (0x01), p0=0, p1=0, p2=0, p3=64 (CANFDX|CANOVIO)
+        ...[
+          0x30,
+          0x31,
+          0x30,
+          0x30,
+          0x30,
+          0x30,
+          0x30,
+          0x30,
+          0x34,
+          0x30,
+        ], // 01 00 00 00 40
+        // CRC: deliberately wrong (all zeros instead of correct value)
+        ...[0x30, 0x30, 0x30, 0x30], // 00 00
+        consts.CR, consts.LF, consts.XON,
+      ]);
+      parser.addData(bytes);
+      expect(parser.moveNext(), isTrue);
+      final frame = parser.current;
+      expect(frame.format, ZFrameFormat.hexHeader);
+      expect(frame.crcValid, isFalse);
     });
   });
 }
 
-void checkHeader(
+void checkFrame(
   ZModemParser parser,
   int type,
-  int p0,
-  int p1,
-  int p2,
-  int p3,
-) {
+  ZFrameFormat format,
+  bool crcValid, [
+  int? dataLength,
+]) {
   expect(parser.moveNext(), isTrue);
-  final h = parser.current as ZModemHeader;
-  expect(h.type, type);
-  expect(h.p0, p0);
-  expect(h.p1, p1);
-  expect(h.p2, p2);
-  expect(h.p3, p3);
-}
-
-void checkData(ZModemParser parser, int type, int length) {
-  expect(parser.moveNext(), isTrue);
-  final dp = parser.current as ZModemDataPacket;
-  expect(dp.type, type);
-  expect(dp.data.length, length);
+  final frame = parser.current;
+  expect(frame.type, type);
+  expect(frame.format, format);
+  expect(frame.crcValid, crcValid);
+  if (dataLength != null) {
+    expect(frame.data.length, dataLength);
+  }
 }

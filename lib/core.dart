@@ -5,13 +5,29 @@ import 'dart:typed_data';
 import 'package:zmodem_lbp/src/util/string.dart';
 import 'package:zmodem_lbp/src/zmodem_event.dart';
 import 'package:zmodem_lbp/src/zmodem_fileinfo.dart';
-import 'package:zmodem_lbp/src/zmodem_parser.dart';
 import 'package:zmodem_lbp/src/zmodem_frame.dart';
+import 'package:zmodem_lbp/src/zmodem_frame_types.dart';
+import 'package:zmodem_lbp/src/zmodem_parser.dart';
 import 'package:zmodem_lbp/src/consts.dart' as consts;
 
 typedef ZModemTraceHandler = void Function(String message);
 
 typedef ZModemTextHandler = void Function(int char);
+
+enum ZModemState {
+  init,
+  rqInit,
+  rInit,
+  sInit,
+  receivedFileProposal,
+  waitingContent,
+  receivingContent,
+  readyToSend,
+  sentFileProposal,
+  sendingContent,
+  closed,
+  fin,
+}
 
 /// Contains the state of a ZModem session.
 class ZModemCore {
@@ -20,7 +36,7 @@ class ZModemCore {
   late final _parser = ZModemParser()
     ..onPlainText = onPlainText
     ..onCancel = () {
-      _state = _ZInitState(this);
+      _state = ZModemState.init;
       _cancelled = true;
     };
 
@@ -28,36 +44,41 @@ class ZModemCore {
 
   final _sendQueue = Queue<ZModemPacket>();
 
-  // ignore: unused_field
   Uint8List? _attnSequence;
 
-  late _ZModemState _state = _ZInitState(this);
+  ZModemState _state = ZModemState.init;
+  DateTime? _stateEnteredAt;
 
-  bool get isFinished => _state is _ZFinState;
+  static const _maxDataSubpacketSize = 8192;
 
-  static const maxDataSubpacketSize = 8192;
+  static const _stateTimeouts = <ZModemState, Duration>{
+    ZModemState.waitingContent: Duration(seconds: 30),
+    ZModemState.receivingContent: Duration(seconds: 30),
+    ZModemState.closed: Duration(seconds: 10),
+    ZModemState.sendingContent: Duration(seconds: 60),
+  };
 
   final ZModemTraceHandler? onTrace;
 
   final ZModemTextHandler? onPlainText;
 
+  bool get isFinished => _state == ZModemState.fin;
+
   Iterable<ZModemEvent> receive(Uint8List data) sync* {
     _parser.addData(data);
 
     while (_parser.moveNext()) {
-      final packet = _parser.current;
-      onTrace?.call('<- $packet');
+      final frame = _parser.current;
+      onTrace?.call('<- $frame');
 
-      if (packet is ZModemHeader) {
-        final event = _state.handleHeader(packet);
-        if (event != null) {
-          yield event;
-        }
-      } else if (packet is ZModemDataPacket) {
-        final event = _state.handleDataSubpacket(packet);
-        if (event != null) {
-          yield event;
-        }
+      if (!frame.crcValid && frame.format == ZFrameFormat.dataSubpacket) {
+        yield ZCrcErrorEvent(frame);
+        continue;
+      }
+
+      final event = _handleFrame(frame);
+      if (event != null) {
+        yield event;
       }
     }
 
@@ -67,19 +88,146 @@ class ZModemCore {
     }
   }
 
+  ZModemEvent? _handleFrame(ZFrame frame) {
+    switch ((_state, frame.type)) {
+      case (ZModemState.init, consts.ZRINIT):
+        return _emitEvent(ZModemState.readyToSend, ZReadyToSendEvent());
+
+      case (ZModemState.init, consts.ZRQINIT):
+        _enqueue(ZModemHeader.rinit());
+        _enterState(ZModemState.rInit);
+        return null;
+
+      case (ZModemState.rInit, consts.ZSINIT):
+        _enqueue(ZModemHeader.ack());
+        _enterState(ZModemState.sInit);
+        return null;
+
+      case (ZModemState.rInit, consts.ZFILE):
+        _enterState(ZModemState.receivedFileProposal);
+        return null;
+
+      case (ZModemState.rInit, consts.ZFIN):
+        _enqueue(ZModemHeader.fin());
+        return _emitEvent(ZModemState.fin, ZSessionFinishedEvent());
+
+      case (ZModemState.rqInit, consts.ZRINIT):
+        return _emitEvent(ZModemState.readyToSend, ZReadyToSendEvent());
+
+      case (ZModemState.sInit, _):
+        if (frame.format != ZFrameFormat.dataSubpacket) break;
+        if (frame.data.length > 1) {
+          _attnSequence = frame.data.sublist(1);
+        } else {
+          _attnSequence = null;
+        }
+        _enterState(ZModemState.rInit);
+        return null;
+
+      case (ZModemState.receivedFileProposal, _):
+        if (frame.format != ZFrameFormat.dataSubpacket) break;
+        final fileInfo = _parseFileInfo(frame.data);
+        return ZFileOfferedEvent(fileInfo);
+
+      case (ZModemState.waitingContent, consts.ZDATA):
+        _enterState(ZModemState.receivingContent);
+        return null;
+
+      case (ZModemState.receivingContent, consts.ZEOF):
+        _enqueue(ZModemHeader.rinit());
+        return _emitEvent(ZModemState.rInit, ZFileEndEvent());
+
+      case (ZModemState.receivingContent, _):
+        if (frame.format == ZFrameFormat.dataSubpacket) {
+          return ZFileDataEvent(frame.data);
+        }
+        break;
+
+      case (ZModemState.readyToSend, consts.ZRINIT):
+        return null;
+
+      case (ZModemState.sentFileProposal, consts.ZRINIT):
+        return null;
+
+      case (ZModemState.sentFileProposal, consts.ZRPOS):
+        final offset = _readLE32(frame);
+        _enqueue(ZModemHeader.data(offset));
+        return _emitEvent(
+          ZModemState.sendingContent,
+          ZFileAcceptedEvent(offset),
+        );
+
+      case (ZModemState.sentFileProposal, consts.ZSKIP):
+        return _emitEvent(ZModemState.readyToSend, ZFileSkippedEvent());
+
+      case (ZModemState.sendingContent, consts.ZRPOS):
+        return ZFileAcceptedEvent(_readLE32(frame));
+
+      case (ZModemState.sendingContent, consts.ZSKIP):
+        return _emitEvent(ZModemState.readyToSend, ZFileSkippedEvent());
+
+      case (_, consts.ZFIN):
+        if (frame.format == ZFrameFormat.dataSubpacket) break;
+        _enqueue(ZModemHeader.fin());
+        return _emitEvent(ZModemState.fin, ZSessionFinishedEvent());
+    }
+    return null;
+  }
+
+  void _enterState(ZModemState newState) {
+    _state = newState;
+    _stateEnteredAt = DateTime.now();
+  }
+
+  /// Convenience: transition + return event.
+  ZModemEvent _emitEvent(ZModemState newState, ZModemEvent event) {
+    _enterState(newState);
+    return event;
+  }
+
+  /// Check if the current state has timed out.
+  ZModemEvent? checkTimeout() {
+    final timeout = _stateTimeouts[_state];
+    if (timeout == null) return null;
+    if (_stateEnteredAt == null) return null;
+    if (DateTime.now().difference(_stateEnteredAt!) > timeout) {
+      _enqueue(ZModemHeader.fin());
+      _state = ZModemState.closed;
+      _stateEnteredAt = DateTime.now();
+      return ZTimeoutEvent(_state.name);
+    }
+    return null;
+  }
+
+  int _readLE32(ZFrame frame) {
+    return frame.params[0] |
+        (frame.params[1] << 8) |
+        (frame.params[2] << 16) |
+        (frame.params[3] << 24);
+  }
+
+  ZModemFileInfo _parseFileInfo(Uint8List data) {
+    final pathname = readCString(data, 0);
+    final propertyString = readCString(data, pathname.length + 1);
+    final properties = propertyString.split(' ');
+
+    return ZModemFileInfo(
+      pathname: pathname,
+      length: properties.isNotEmpty ? int.parse(properties[0]) : null,
+      modificationTime: properties.length > 1 ? int.parse(properties[1]) : null,
+      mode: properties.length > 2 ? properties[2] : null,
+      filesRemaining: properties.length > 4 ? int.parse(properties[4]) : null,
+      bytesRemaining: properties.length > 5 ? int.parse(properties[5]) : null,
+    );
+  }
+
   void _enqueue(ZModemPacket packet) {
     _sendQueue.add(packet);
   }
 
-  void _expectDataSubpacket() {
-    _parser.expectDataSubpacket();
-  }
-
-  void _requireState<T extends _ZModemState>() {
-    if (_state is! T) {
-      throw ZModemException(
-        'Invalid state: ${_state.runtimeType}, expected: $T',
-      );
+  void _requireState(ZModemState expected) {
+    if (_state != expected) {
+      throw ZModemException('Invalid state: $_state, expected: $expected');
     }
   }
 
@@ -97,59 +245,57 @@ class ZModemCore {
   }
 
   void initiateSend() {
-    _requireState<_ZInitState>();
+    _requireState(ZModemState.init);
     _enqueue(ZModemHeader.rqinit());
-    _state = _ZRqinitState(this);
+    _enterState(ZModemState.rqInit);
   }
 
   void initiateReceive() {
-    _requireState<_ZInitState>();
+    _requireState(ZModemState.init);
     _enqueue(ZModemHeader.rinit());
-    _state = _ZRinitState(this);
+    _enterState(ZModemState.rInit);
   }
 
   void acceptFile([int offset = 0]) {
-    _requireState<_ZReceivedFileProposalState>();
+    _requireState(ZModemState.receivedFileProposal);
     _enqueue(ZModemHeader.rpos(offset));
-    _state = _ZWaitingContentState(this);
+    _enterState(ZModemState.waitingContent);
   }
 
   void skipFile() {
-    _requireState<_ZReceivedFileProposalState>();
+    _requireState(ZModemState.receivedFileProposal);
     _enqueue(ZModemHeader.skip());
-    _state = _ZRinitState(this);
+    _enterState(ZModemState.rInit);
   }
 
   void offerFile(ZModemFileInfo fileInfo) {
-    _requireState<_ZReadyToSendState>();
+    _requireState(ZModemState.readyToSend);
     _enqueue(ZModemHeader.file());
     _enqueue(ZModemDataPacket.fileInfo(fileInfo));
-    _state = ZSentFileProposalState(this);
+    _enterState(ZModemState.sentFileProposal);
   }
 
   void sendFileData(Uint8List data) {
-    _requireState<_ZSendingContentState>();
+    _requireState(ZModemState.sendingContent);
 
-    for (var i = 0; i < data.length; i += maxDataSubpacketSize) {
-      final end = min(i + maxDataSubpacketSize, data.length);
+    for (var i = 0; i < data.length; i += _maxDataSubpacketSize) {
+      final end = min(i + _maxDataSubpacketSize, data.length);
       _enqueue(ZModemDataPacket.fileData(Uint8List.sublistView(data, i, end)));
     }
   }
 
   void finishSending(int offset) {
-    _requireState<_ZSendingContentState>();
+    _requireState(ZModemState.sendingContent);
     _enqueue(ZModemDataPacket.fileData(Uint8List(0), eof: true));
     _enqueue(ZModemHeader.eof(offset));
-    _state = _ZRqinitState(this);
+    _enterState(ZModemState.rqInit);
   }
 
   void finishSession() {
-    if (_state is _ZClosedState || _state is _ZFinState) {
-      return;
-    }
+    if (_state == ZModemState.closed || _state == ZModemState.fin) return;
 
     _enqueue(ZModemHeader.fin());
-    _state = _ZClosedState(this);
+    _enterState(ZModemState.closed);
   }
 }
 
@@ -160,272 +306,4 @@ class ZModemException implements Exception {
 
   @override
   String toString() => message;
-}
-
-abstract class _ZModemState {
-  _ZModemState(this.core);
-
-  final ZModemCore core;
-
-  ZModemEvent? handleHeader(ZModemHeader header) {
-    if (header.type == consts.ZFIN) {
-      core._enqueue(ZModemHeader.fin());
-      core._state = _ZFinState(core);
-      return ZSessionFinishedEvent();
-    }
-    throw ZModemException('Unexpected header: $header (state: $this)');
-  }
-
-  ZModemEvent? handleDataSubpacket(ZModemDataPacket packet) {
-    throw ZModemException('Unexpected data subpacket: $packet (state: $this)');
-  }
-}
-
-/// A state where no messages have been sent or received yet. Waiting for
-/// our or the other side to initiate the session.
-class _ZInitState extends _ZModemState {
-  _ZInitState(super.core);
-
-  @override
-  ZModemEvent? handleHeader(ZModemHeader header) {
-    switch (header.type) {
-      case consts.ZRINIT:
-        core._state = _ZReadyToSendState(core);
-        return ZReadyToSendEvent();
-      case consts.ZRQINIT:
-        core._enqueue(ZModemHeader.rinit());
-        core._state = _ZRinitState(core);
-        return null;
-      default:
-        return super.handleHeader(header);
-    }
-  }
-}
-
-/// A state where we have requested a file transfer and waiting a file proposal.
-class _ZRinitState extends _ZModemState {
-  _ZRinitState(super.core);
-
-  @override
-  ZModemEvent? handleHeader(ZModemHeader header) {
-    switch (header.type) {
-      case consts.ZSINIT:
-        core._enqueue(ZModemHeader.ack());
-        core._state = _ZSinitState(core);
-        core._expectDataSubpacket();
-        break;
-      case consts.ZFILE:
-        core._state = _ZReceivedFileProposalState(core);
-        core._expectDataSubpacket();
-        break;
-      case consts.ZFIN:
-        core._enqueue(ZModemHeader.fin());
-        core._state = _ZFinState(core);
-        return ZSessionFinishedEvent();
-      default:
-        return super.handleHeader(header);
-    }
-    return null;
-  }
-}
-
-/// A state where the other side is going to send us the attn sequence.
-class _ZSinitState extends _ZModemState {
-  _ZSinitState(super.core);
-
-  @override
-  ZModemEvent? handleDataSubpacket(ZModemDataPacket packet) {
-    if (packet.data.length <= 1) {
-      core._attnSequence = null;
-    } else {
-      core._attnSequence = packet.data.sublist(1);
-    }
-    // TODO: use core._attnSequence to interrupt the sender if needed
-    core._state = _ZRinitState(core);
-    return null;
-  }
-}
-
-/// A state where we've got a file proposal, but haven't decided whether to
-/// accept it or not.
-class _ZReceivedFileProposalState extends _ZModemState {
-  _ZReceivedFileProposalState(super.core);
-
-  @override
-  ZModemEvent? handleDataSubpacket(ZModemDataPacket packet) {
-    final pathname = readCString(packet.data, 0);
-    final propertyString = readCString(packet.data, pathname.length + 1);
-    final properties = propertyString.split(' ');
-
-    final fileInfo = ZModemFileInfo(
-      pathname: pathname,
-      length: properties.isNotEmpty ? int.parse(properties[0]) : null,
-      modificationTime: properties.length > 1 ? int.parse(properties[1]) : null,
-      mode: properties.length > 2 ? properties[2] : null,
-      filesRemaining: properties.length > 4 ? int.parse(properties[4]) : null,
-      bytesRemaining: properties.length > 5 ? int.parse(properties[5]) : null,
-    );
-
-    return ZFileOfferedEvent(fileInfo);
-  }
-}
-
-/// A state where we've accepted a file proposal, but haven't received the ZDATA
-/// header yet.
-class _ZWaitingContentState extends _ZModemState {
-  _ZWaitingContentState(super.core);
-
-  @override
-  ZModemEvent? handleHeader(ZModemHeader header) {
-    switch (header.type) {
-      case consts.ZDATA:
-        core._state = _ZReceivingContentState(core);
-        core._expectDataSubpacket();
-        return null;
-      default:
-        return super.handleHeader(header);
-    }
-  }
-}
-
-/// A state where we've received the ZDATA header, and are receiving the file
-/// contents.
-class _ZReceivingContentState extends _ZModemState {
-  _ZReceivingContentState(super.core);
-
-  @override
-  ZModemEvent? handleHeader(ZModemHeader header) {
-    switch (header.type) {
-      case consts.ZEOF:
-        core._enqueue(ZModemHeader.rinit());
-        core._state = _ZRinitState(core);
-        return ZFileEndEvent();
-      default:
-        return super.handleHeader(header);
-    }
-  }
-
-  @override
-  ZModemEvent? handleDataSubpacket(ZModemDataPacket packet) {
-    if (packet.type == consts.ZCRCG || packet.type == consts.ZCRCQ) {
-      core._expectDataSubpacket();
-    }
-    return ZFileDataEvent(packet.data);
-  }
-}
-
-/// A state where we've requested the other side to receive a file from us, but
-/// haven't been notified that it's ready yet.
-class _ZRqinitState extends _ZModemState {
-  _ZRqinitState(super.core);
-
-  @override
-  ZModemEvent? handleHeader(ZModemHeader header) {
-    switch (header.type) {
-      case consts.ZRINIT:
-        core._state = _ZReadyToSendState(core);
-        return ZReadyToSendEvent();
-      default:
-        return super.handleHeader(header);
-    }
-  }
-}
-
-/// A state where the other side has notified us that it's ready to receive a
-/// file from us.
-class _ZReadyToSendState extends _ZModemState {
-  _ZReadyToSendState(super.core);
-
-  @override
-  ZModemEvent? handleHeader(ZModemHeader header) {
-    switch (header.type) {
-      case consts.ZRINIT:
-        // Ignore delayed ZRINIT retry.
-        return null;
-      default:
-        return super.handleHeader(header);
-    }
-  }
-}
-
-/// A state where we've sent a file proposal, but haven't received a response
-/// from the other side yet.
-class ZSentFileProposalState extends _ZModemState {
-  ZSentFileProposalState(super.core);
-
-  @override
-  ZModemEvent? handleHeader(ZModemHeader header) {
-    switch (header.type) {
-      case consts.ZRINIT:
-        // Ignore delayed ZRINIT retry.
-        return null;
-      case consts.ZRPOS:
-        final offset = header.p0 |
-            (header.p1 << 8) |
-            (header.p2 << 16) |
-            (header.p3 << 24);
-        core._enqueue(ZModemHeader.data(offset));
-        core._state = _ZSendingContentState(core);
-        return ZFileAcceptedEvent(offset);
-      case consts.ZSKIP:
-        core._state = _ZReadyToSendState(core);
-        return ZFileSkippedEvent();
-      default:
-        return super.handleHeader(header);
-    }
-  }
-}
-
-/// A state where we've sent the ZDATA header, and are sending chunks of file
-/// contents.
-class _ZSendingContentState extends _ZModemState {
-  _ZSendingContentState(super.core);
-
-  @override
-  ZModemEvent? handleHeader(ZModemHeader header) {
-    switch (header.type) {
-      case consts.ZRPOS:
-        core._state = _ZReadyToSendState(core);
-        return ZFileAcceptedEvent(header.p0);
-      case consts.ZSKIP:
-        core._state = _ZReadyToSendState(core);
-        return ZFileSkippedEvent();
-      default:
-        return super.handleHeader(header);
-    }
-  }
-}
-
-/// A state where we as the sender have sent the ZFIN header, and are waiting
-/// for the other side to acknowledge it.
-class _ZClosedState extends _ZModemState {
-  _ZClosedState(super.core);
-
-  @override
-  ZModemEvent? handleHeader(ZModemHeader header) {
-    switch (header.type) {
-      case consts.ZFIN:
-        core._enqueue(ZModemOverAndOut());
-        core._state = _ZFinState(core);
-        return ZSessionFinishedEvent();
-    }
-    return null;
-  }
-}
-
-/// A state where the session is fully closed.
-class _ZFinState extends _ZModemState {
-  _ZFinState(super.core);
-
-  @override
-  ZModemEvent? handleHeader(ZModemHeader header) {
-    // Ignore all incoming headers in finished state, including duplicate
-    // ZFIN. The session is already closed.
-    return null;
-  }
-
-  @override
-  ZModemEvent? handleDataSubpacket(ZModemDataPacket packet) {
-    return null;
-  }
 }

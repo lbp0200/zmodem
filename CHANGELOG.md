@@ -1,3 +1,12 @@
+## 0.0.8
+
+- ZFrame unified frame type replaces ZModemHeader/ZModemDataPacket in parser output
+- Parser rewritten with autonomous mini state machine (no more _expectDataSubpacket)
+- CRC validation on all frames
+- Core rewritten with ZModemState enum + centralized transition table
+- Timeout detection in blocking states
+- Fuzz + soak test suite (1000 file transfers, 100K random iterations)
+
 ## 0.0.6
 
 - Correct escape

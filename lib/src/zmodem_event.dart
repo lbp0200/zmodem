@@ -1,5 +1,6 @@
 import 'package:zmodem_lbp/src/util/debug.dart';
 import 'package:zmodem_lbp/src/zmodem_fileinfo.dart';
+import 'package:zmodem_lbp/src/zmodem_frame_types.dart';
 
 abstract class ZModemEvent {}
 
@@ -80,5 +81,29 @@ class ZFileSkippedEvent implements ZModemEvent {
   @override
   String toString() {
     return 'ZFileSkippedEvent()';
+  }
+}
+
+/// A data subpacket with an invalid CRC was received.
+class ZCrcErrorEvent implements ZModemEvent {
+  final ZFrame frame;
+
+  ZCrcErrorEvent(this.frame);
+
+  @override
+  String toString() {
+    return 'ZCrcErrorEvent(type: ${frame.type})';
+  }
+}
+
+/// A blocking state timed out (e.g., waiting for content).
+class ZTimeoutEvent implements ZModemEvent {
+  final String stateName;
+
+  ZTimeoutEvent(this.stateName);
+
+  @override
+  String toString() {
+    return 'ZTimeoutEvent(state: $stateName)';
   }
 }
