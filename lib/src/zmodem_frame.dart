@@ -5,7 +5,7 @@ import 'package:zmodem_lbp/src/crc.dart';
 import 'package:zmodem_lbp/src/escape.dart';
 import 'package:zmodem_lbp/src/util/int.dart';
 import 'package:zmodem_lbp/src/util/string.dart';
-import 'package:zmodem_lbp/zmodem.dart';
+import 'package:zmodem_lbp/src/zmodem_fileinfo.dart';
 
 abstract class ZModemPacket {
   int get type;

@@ -117,16 +117,3 @@ class CRC32 {
 
   int get value => _crc ^ 0xFFFFFFFF;
 }
-
-void main() {
-  final crc = CRC16()
-    ..update(0x01)
-    ..update(0x00)
-    ..update(0x00)
-    ..update(0x00)
-    ..update(0x23)
-    ..finalize();
-
-  print(crc.value.toRadixString(2));
-  print(crc.value.toRadixString(16));
-}

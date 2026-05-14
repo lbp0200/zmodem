@@ -35,7 +35,7 @@ class ZModemCore {
 
   bool get isFinished => _state is _ZFinState;
 
-  final maxDataSubpacketSize = 8192;
+  static const maxDataSubpacketSize = 8192;
 
   final ZModemTraceHandler? onTrace;
 
@@ -240,6 +240,7 @@ class _ZSinitState extends _ZModemState {
     } else {
       core._attnSequence = packet.data.sublist(1);
     }
+    // TODO: use core._attnSequence to interrupt the sender if needed
     core._state = _ZRinitState(core);
     return null;
   }
@@ -249,17 +250,6 @@ class _ZSinitState extends _ZModemState {
 /// accept it or not.
 class _ZReceivedFileProposalState extends _ZModemState {
   _ZReceivedFileProposalState(super.core);
-
-  @override
-  ZModemEvent? handleHeader(ZModemHeader header) {
-    switch (header.type) {
-      case consts.ZEOF:
-      case consts.ZFIN:
-        return super.handleHeader(header);
-      default:
-        return super.handleHeader(header);
-    }
-  }
 
   @override
   ZModemEvent? handleDataSubpacket(ZModemDataPacket packet) {
@@ -370,9 +360,13 @@ class ZSentFileProposalState extends _ZModemState {
         // Ignore delayed ZRINIT retry.
         return null;
       case consts.ZRPOS:
-        core._enqueue(ZModemHeader.data(0)); // TODO: parse p0 ~ p3
+        final offset = header.p0 |
+            (header.p1 << 8) |
+            (header.p2 << 16) |
+            (header.p3 << 24);
+        core._enqueue(ZModemHeader.data(offset));
         core._state = _ZSendingContentState(core);
-        return ZFileAcceptedEvent(header.p0); // TODO: parse p0 ~ p3
+        return ZFileAcceptedEvent(offset);
       case consts.ZSKIP:
         core._state = _ZReadyToSendState(core);
         return ZFileSkippedEvent();

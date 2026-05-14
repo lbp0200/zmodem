@@ -35,8 +35,8 @@ Future<void> sz(List<String> files) async {
 
   String? currentFile;
 
-  await for (final event in stdin) {
-    for (final event in zcore.receive(event as Uint8List)) {
+  await for (final chunk in stdin) {
+    for (final event in zcore.receive(chunk as Uint8List)) {
       if (event is ZReadyToSendEvent) {
         if (filesLeft.isNotEmpty) {
           final file = filesLeft.removeFirst();
@@ -77,6 +77,5 @@ Future<void> sz(List<String> files) async {
     }
   }
 
-  stdout.write('OO');
   await stdout.flush();
 }
