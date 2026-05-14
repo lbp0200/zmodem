@@ -1,4 +1,4 @@
-import 'package:zmodem/src/util/debug.dart';
+import 'package:zmodem_lbp/src/util/debug.dart';
 
 class ZModemFileInfo {
   ZModemFileInfo({

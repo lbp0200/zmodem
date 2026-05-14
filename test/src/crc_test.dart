@@ -1,5 +1,5 @@
 import 'package:test/test.dart';
-import 'package:zmodem/src/crc.dart';
+import 'package:zmodem_lbp/src/crc.dart';
 
 void main() {
   group('CRC16', () {

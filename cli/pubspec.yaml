@@ -5,11 +5,11 @@ version: 1.0.0
 publish_to: none
 
 environment:
-  sdk: ">=2.18.6 <3.0.0"
+  sdk: ">=3.11.0 <4.0.0"
 
 dependencies:
   dart_console: ^1.1.2
-  zmodem:
+  zmodem_lbp:
     path: ../
 #   path: ^1.8.0
 

@@ -3,7 +3,7 @@ import 'dart:typed_data';
 
 import 'package:async/async.dart';
 import 'package:dart_console/dart_console.dart';
-import 'package:zmodem/zmodem.dart';
+import 'package:zmodem_lbp/zmodem.dart';
 
 void main() async {
   final console = Console();

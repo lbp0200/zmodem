@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:zmodem/zmodem.dart';
+import 'package:zmodem_lbp/zmodem.dart';
 
 void main() {
   group('ZModemCore', () {

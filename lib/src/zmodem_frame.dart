@@ -1,11 +1,11 @@
 import 'dart:typed_data';
 
-import 'package:zmodem/src/consts.dart' as consts;
-import 'package:zmodem/src/crc.dart';
-import 'package:zmodem/src/escape.dart';
-import 'package:zmodem/src/util/int.dart';
-import 'package:zmodem/src/util/string.dart';
-import 'package:zmodem/zmodem.dart';
+import 'package:zmodem_lbp/src/consts.dart' as consts;
+import 'package:zmodem_lbp/src/crc.dart';
+import 'package:zmodem_lbp/src/escape.dart';
+import 'package:zmodem_lbp/src/util/int.dart';
+import 'package:zmodem_lbp/src/util/string.dart';
+import 'package:zmodem_lbp/zmodem.dart';
 
 abstract class ZModemPacket {
   // int get type;

@@ -2,12 +2,12 @@ import 'dart:collection';
 import 'dart:math';
 import 'dart:typed_data';
 
-import 'package:zmodem/src/util/string.dart';
-import 'package:zmodem/src/zmodem_event.dart';
-import 'package:zmodem/src/zmodem_fileinfo.dart';
-import 'package:zmodem/src/zmodem_parser.dart';
-import 'package:zmodem/src/zmodem_frame.dart';
-import 'package:zmodem/src/consts.dart' as consts;
+import 'package:zmodem_lbp/src/util/string.dart';
+import 'package:zmodem_lbp/src/zmodem_event.dart';
+import 'package:zmodem_lbp/src/zmodem_fileinfo.dart';
+import 'package:zmodem_lbp/src/zmodem_parser.dart';
+import 'package:zmodem_lbp/src/zmodem_frame.dart';
+import 'package:zmodem_lbp/src/consts.dart' as consts;
 
 typedef ZModemTraceHandler = void Function(String message);
 

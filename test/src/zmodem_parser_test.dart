@@ -2,9 +2,9 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
-import 'package:zmodem/src/zmodem_frame.dart';
-import 'package:zmodem/src/zmodem_parser.dart';
-import 'package:zmodem/src/consts.dart' as consts;
+import 'package:zmodem_lbp/src/zmodem_frame.dart';
+import 'package:zmodem_lbp/src/zmodem_parser.dart';
+import 'package:zmodem_lbp/src/consts.dart' as consts;
 
 void main() async {
   final session1Data = await File('test/fixture/session1.bin').readAsBytes();

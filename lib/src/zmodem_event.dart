@@ -1,5 +1,5 @@
-import 'package:zmodem/src/util/debug.dart';
-import 'package:zmodem/src/zmodem_fileinfo.dart';
+import 'package:zmodem_lbp/src/util/debug.dart';
+import 'package:zmodem_lbp/src/zmodem_fileinfo.dart';
 
 abstract class ZModemEvent {}
 

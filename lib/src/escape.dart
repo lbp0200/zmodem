@@ -1,5 +1,5 @@
 import 'dart:typed_data';
-import 'package:zmodem/src/consts.dart' as consts;
+import 'package:zmodem_lbp/src/consts.dart' as consts;
 
 extension BytesBuilderExtension on BytesBuilder {
   void addEscapedByte(int byte) {
