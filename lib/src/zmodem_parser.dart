@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:zmodem_lbp/src/buffer.dart';
 import 'package:zmodem_lbp/src/consts.dart' as consts;
 import 'package:zmodem_lbp/src/crc.dart';
+import 'package:zmodem_lbp/src/metrics.dart';
 import 'package:zmodem_lbp/src/zmodem_frame_types.dart';
 
 enum _ParseState { expectHeader, expectData }
@@ -12,6 +13,9 @@ class ZModemParser implements Iterator<ZFrame> {
   late final Iterator<ZFrame?> _parser = _createParser().iterator;
   ZFrame? _current;
   static const _maxDataSubpacketSize = 64 * 1024;
+
+  /// Optional metrics collector for diagnostics and fuzz testing.
+  ZModemMetrics? metrics;
 
   void Function(int)? onPlainText;
   void Function()? onCancel;
@@ -132,6 +136,20 @@ class ZModemParser implements Iterator<ZFrame> {
                 crcValid: computedCrc == receivedCrc,
                 format: ZFrameFormat.dataSubpacket,
               );
+              final m = metrics;
+              if (m != null) {
+                m.framesParsed++;
+                m.dataSubpacketsParsed++;
+                if (computedCrc != receivedCrc) {
+                  m.invalidCrcCount++;
+                }
+                if (terminator == consts.ZCRCW) {
+                  m.dataPacketReplyWait++;
+                }
+                if (terminator == consts.ZCRCQ || terminator == consts.ZCRCW) {
+                  m.dataPacketsWithReply++;
+                }
+              }
 
               if (terminator == consts.ZCRCE || terminator == consts.ZCRCW) {
                 state = _ParseState.expectHeader;
@@ -195,6 +213,14 @@ class ZModemParser implements Iterator<ZFrame> {
       crcValid: computedCrc == receivedCrc,
       format: ZFrameFormat.hexHeader,
     );
+    final m = metrics;
+    if (m != null) {
+      m.framesParsed++;
+      m.hexHeadersParsed++;
+      if (computedCrc != receivedCrc) {
+        m.invalidCrcCount++;
+      }
+    }
   }
 
   Iterable<ZFrame?> _parseBinaryPacket() sync* {
@@ -249,6 +275,14 @@ class ZModemParser implements Iterator<ZFrame> {
       crcValid: computedCrc == receivedCrc,
       format: ZFrameFormat.binaryHeader,
     );
+    final m = metrics;
+    if (m != null) {
+      m.framesParsed++;
+      m.binaryHeadersParsed++;
+      if (computedCrc != receivedCrc) {
+        m.invalidCrcCount++;
+      }
+    }
   }
 
   var _consecutiveCanCount = 0;
@@ -259,11 +293,19 @@ class ZModemParser implements Iterator<ZFrame> {
       _consecutiveCanCount++;
       if (_consecutiveCanCount >= 5) {
         _consecutiveCanCount = 0;
+        final m = metrics;
+        if (m != null) {
+          m.cancelCount++;
+        }
         _handleCancel();
       }
       return;
     }
     _consecutiveCanCount = 0;
+    final m = metrics;
+    if (m != null) {
+      m.dirtyCharCount++;
+    }
     onPlainText?.call(byte);
   }
 

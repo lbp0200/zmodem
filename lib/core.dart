@@ -2,6 +2,8 @@ import 'dart:collection';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:clock/clock.dart';
+import 'package:zmodem_lbp/src/metrics.dart';
 import 'package:zmodem_lbp/src/util/string.dart';
 import 'package:zmodem_lbp/src/zmodem_event.dart';
 import 'package:zmodem_lbp/src/zmodem_fileinfo.dart';
@@ -33,11 +35,16 @@ enum ZModemState {
 class ZModemCore {
   ZModemCore({this.onTrace, this.onPlainText});
 
+  /// Optional metrics collector for diagnostics and fuzz testing.
+  ZModemMetrics? metrics;
+
   late final _parser = ZModemParser()
     ..onPlainText = onPlainText
     ..onCancel = () {
       _state = ZModemState.init;
       _cancelled = true;
+      metrics?.sessionCancellations++;
+      metrics?.cancelCount++;
     };
 
   var _cancelled = false;
@@ -66,10 +73,15 @@ class ZModemCore {
 
   Iterable<ZModemEvent> receive(Uint8List data) sync* {
     _parser.addData(data);
+    _parser.metrics = metrics; // share metrics reference
 
     while (_parser.moveNext()) {
       final frame = _parser.current;
       onTrace?.call('<- $frame');
+      final m = metrics;
+      if (m != null) {
+        m.stateTransitions++;
+      }
 
       if (!frame.crcValid && frame.format == ZFrameFormat.dataSubpacket) {
         yield ZCrcErrorEvent(frame);
@@ -78,6 +90,15 @@ class ZModemCore {
 
       final event = _handleFrame(frame);
       if (event != null) {
+        if (event is ZFileDataEvent) {
+          metrics?.totalDataBytesReceived += event.data.length;
+        }
+        if (event is ZFileOfferedEvent) {
+          metrics?.fileTransfers++;
+        }
+        if (event is ZTimeoutEvent) {
+          metrics?.timeoutsFired++;
+        }
         yield event;
       }
     }
@@ -176,7 +197,7 @@ class ZModemCore {
 
   void _enterState(ZModemState newState) {
     _state = newState;
-    _stateEnteredAt = DateTime.now();
+    _stateEnteredAt = clock.now();
   }
 
   /// Convenience: transition + return event.
@@ -190,10 +211,10 @@ class ZModemCore {
     final timeout = _stateTimeouts[_state];
     if (timeout == null) return null;
     if (_stateEnteredAt == null) return null;
-    if (DateTime.now().difference(_stateEnteredAt!) > timeout) {
+    if (clock.now().difference(_stateEnteredAt!) > timeout) {
       _enqueue(ZModemHeader.fin());
       _state = ZModemState.closed;
-      _stateEnteredAt = DateTime.now();
+      _stateEnteredAt = clock.now();
       return ZTimeoutEvent(_state.name);
     }
     return null;
@@ -238,7 +259,11 @@ class ZModemCore {
 
     while (_sendQueue.isNotEmpty) {
       onTrace?.call('-> ${_sendQueue.first}');
-      builder.add(_sendQueue.removeFirst().encode());
+      final packet = _sendQueue.removeFirst();
+      if (packet is ZModemDataPacket) {
+        metrics?.totalDataBytesSent += packet.data.length;
+      }
+      builder.add(packet.encode());
     }
 
     return builder.toBytes();
