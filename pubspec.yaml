@@ -1,6 +1,6 @@
 name: zmodem_lbp
 description: A state machine based, bring-your-own-io style implementation of the ZMODEM protocol in pure Dart
-version: 0.0.9
+version: 0.0.10
 repository: https://github.com/lbp0200/zmodem
 
 environment:
