@@ -5,8 +5,6 @@ import 'package:test/test.dart';
 import 'package:zmodem_lbp/zmodem.dart';
 import 'package:zmodem_lbp/src/consts.dart' as consts;
 import 'package:zmodem_lbp/src/crc.dart';
-import 'package:zmodem_lbp/src/zmodem_frame.dart';
-import 'package:zmodem_lbp/src/zmodem_frame_types.dart';
 import 'package:zmodem_lbp/src/zmodem_parser.dart';
 
 const _seeds = 100;

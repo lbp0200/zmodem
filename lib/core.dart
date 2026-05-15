@@ -51,8 +51,6 @@ class ZModemCore {
 
   final _sendQueue = Queue<ZModemPacket>();
 
-  Uint8List? _attnSequence;
-
   ZModemState _state = ZModemState.init;
   DateTime? _stateEnteredAt;
 
@@ -137,11 +135,6 @@ class ZModemCore {
 
       case (ZModemState.sInit, _):
         if (frame.format != ZFrameFormat.dataSubpacket) break;
-        if (frame.data.length > 1) {
-          _attnSequence = frame.data.sublist(1);
-        } else {
-          _attnSequence = null;
-        }
         _enterState(ZModemState.rInit);
         return null;
 

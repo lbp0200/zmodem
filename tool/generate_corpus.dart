@@ -24,15 +24,15 @@ List<int> _hexFrame(int type, int p0, int p1, int p2, int p3) {
     ..finalize();
 
   final buf = <int>[];
-  void _hex(int v) {
+  void emitHex(int v) {
     buf.addAll(v.toRadixString(16).padLeft(2, '0').toUpperCase().codeUnits);
   }
 
   buf.addAll([consts.ZPAD, consts.ZPAD, consts.ZDLE, consts.ZHEX]);
-  _hex(type);
-  _hex(p0); _hex(p1); _hex(p2); _hex(p3);
-  _hex(crc.value >> 8);
-  _hex(crc.value & 0xff);
+  emitHex(type);
+  emitHex(p0); emitHex(p1); emitHex(p2); emitHex(p3);
+  emitHex(crc.value >> 8);
+  emitHex(crc.value & 0xff);
   buf.addAll([0x0d, 0x0a, 0x11]); // CR LF XON
   return buf;
 }
